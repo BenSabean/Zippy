@@ -1,3 +1,4 @@
+#include <SoftwareSerial.h>
 #include <PID_v1.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
@@ -5,10 +6,12 @@
 #include "Wire.h"
 #endif
 
+// initialize software serial between Arduino Uno and ESP8266
+SoftwareSerial esp(4, 5);
 
 //PID initialization
 double Setpoint, Input, Output;
-PID myPID(&Input, &Output, &Setpoint,30,130,1.1, DIRECT);
+PID myPID(&Input, &Output, &Setpoint, 15, 130, 1, DIRECT);
 
 // class default I2C address is 0x68
 // specific I2C addresses may be passed as a parameter here
@@ -17,6 +20,7 @@ PID myPID(&Input, &Output, &Setpoint,30,130,1.1, DIRECT);
 MPU6050 mpu;
 //MPU6050 mpu(0x69); // <-- use for AD0 high
 
+#define DEBUG false
 #define LED_PIN 13
 #define MOTOR_SPEED 255
 bool blinkState = false;
@@ -31,11 +35,7 @@ uint8_t fifoBuffer[64]; // FIFO storage buffer
 
 // orientation/motion vars
 Quaternion q;           // [w, x, y, z]         quaternion container
-VectorInt16 aa;         // [x, y, z]            accel sensor measurements
-VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
 VectorFloat gravity;    // [x, y, z]            gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
 // packet structure for InvenSense teapot demo
@@ -60,15 +60,15 @@ void dmpDataReady() {
 
 void setup() {
   // PID initial varialbles declarations
-  Setpoint = 3;  
+  Setpoint = 3.5;
   Input = 0;  //Gyro not configured yet so set default input
 
   // turn the PID on
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(-1 * MOTOR_SPEED, MOTOR_SPEED);
   myPID.SetSampleTime(10);
-  
-  
+
+
   // join I2C bus (I2Cdev library doesn't do this automatically)
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
   Wire.begin();
@@ -81,6 +81,8 @@ void setup() {
   // (115200 chosen because it is required for Teapot Demo output, but it's
   // really up to you depending on your project)
   Serial.begin(115200);
+  esp.begin(115200);
+
   while (!Serial); // wait for Leonardo enumeration, others continue immediately
 
   // NOTE: 8MHz or slower host processors, like the Teensy @ 3.3v or Ardunio
@@ -160,17 +162,46 @@ void loop() {
 
   // wait for MPU interrupt or extra packet(s) available
   while (!mpuInterrupt && fifoCount < packetSize) {
+    // Check for incoming commands
+    if (esp.available()) {
+      switch(2/*int(esp.read())*/) {
+        case 2:    //Foreward
+          Serial.println("Foreward");
+          Setpoint = 0.8;
+          break;
+        case 3:    //Backward
+          Serial.println("Backwards");
+          Setpoint = 4.3;
+          break;
+        case 4:    //Left
+          Serial.println("Left");
+          break;
+        case 5:    //Right
+          Serial.println("Right");
+          break;
+        default:   //Unknown command or 0 causes stop
+        Serial.println("Stop");
+          Setpoint = 3.5;
+      }
+    }
+    
     // Use PID to find error component
     Input = (ypr[1] * 180 / M_PI);
     myPID.Compute();
+
+#if DEBUG
     Serial.print("Input: ");
     Serial.println(Input);
+#endif
 
     // translate error component to a motorspeed
     int motorSpeed = int(Output);
+
+#if DEBUG
     Serial.print("Motor Speed: ");
     Serial.println(motorSpeed);
-    
+#endif
+
     //Motors forward
     if (motorSpeed < 0) {
       digitalWrite(9, HIGH);  //Engage the Brake for Channel A
@@ -198,11 +229,12 @@ void loop() {
       digitalWrite(8, LOW);   //Disengage the Brake for Channel B
       analogWrite(11, motorSpeed);   //Spins the motor on Channel B
     }
-    
+
     else {
       digitalWrite(9, HIGH);  //Engage the Brake for Channel A
       digitalWrite(9, HIGH);  //Engage the Brake for Channel B
     }
+
   }
 
   // reset interrupt flag and get INT_STATUS byte
@@ -234,13 +266,15 @@ void loop() {
     mpu.dmpGetQuaternion(&q, fifoBuffer);
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+#if DEBUG
     Serial.print("ypr\t");
     Serial.print(ypr[0] * 180 / M_PI);
     Serial.print("\t");
     Serial.print(ypr[1] * 180 / M_PI);
     Serial.print("\t");
     Serial.println(ypr[2] * 180 / M_PI);
-
+#endif
 
     // blink LED to indicate activity
     blinkState = !blinkState;

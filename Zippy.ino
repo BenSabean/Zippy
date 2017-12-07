@@ -16,14 +16,10 @@ PID myPID(&Input, &Output, &Setpoint, 15, 120, 1.1, DIRECT);
 // MPU Declaration
 MPU6050 mpu;
 
-
-#define DEBUG false
 bool left = false;
 bool right = false;
 uint8_t loopCount = 0;
-#define LED_PIN 13
 #define MOTOR_SPEED 255
-bool blinkState = false;
 
 // MPU control/status vars
 bool dmpReady = false;  // set true if DMP init was successful

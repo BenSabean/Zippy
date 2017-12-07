@@ -11,16 +11,11 @@ SoftwareSerial esp(4, 5);
 
 //PID initialization
 double Setpoint, Input, Output;
-//15,130,1
-// 30,30,1.5
 PID myPID(&Input, &Output, &Setpoint, 15, 120, 1.1, DIRECT);
 
-// class default I2C address is 0x68
-// specific I2C addresses may be passed as a parameter here
-// AD0 low = 0x68 (default for SparkFun breakout and InvenSense evaluation board)
-// AD0 high = 0x69
+// MPU Declaration
 MPU6050 mpu;
-//MPU6050 mpu(0x69); // <-- use for AD0 high
+
 
 #define DEBUG false
 bool left = false;
@@ -43,17 +38,11 @@ Quaternion q;           // [w, x, y, z]         quaternion container
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
-// packet structure for InvenSense teapot demo
-uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
-
-
-
 // ================================================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
 // ================================================================
 
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
-//volatile bool balance = false;
 void dmpDataReady() {
   mpuInterrupt = true;
   loopCount++;
@@ -67,39 +56,26 @@ void dmpDataReady() {
 
 void setup() {
   // PID initial varialbles declarations
-  Setpoint = 1.9; //2.8 backwards
-  // 1.9 balance
+  Setpoint = 1.9; 
   Input = 0;  //Gyro not configured yet so set default input
 
-  // turn the PID on
+  // turn the PID and set limits and sample time
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(-1 * MOTOR_SPEED, MOTOR_SPEED);
-  //10
-  // 5ms - 9v on the battery
-  myPID.SetSampleTime(5);   // 1mS
+  myPID.SetSampleTime(5);   // 5mS
 
 
-  // join I2C bus (I2Cdev library doesn't do this automatically)
+  // join I2C bus 
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
   Wire.begin();
-  TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz)
+  TWBR = 24; // 400kHz I2C clock
 #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
   Fastwire::setup(400, true);
 #endif
 
   // initialize serial communication
-  // (115200 chosen because it is required for Teapot Demo output, but it's
-  // really up to you depending on your project)
   Serial.begin(115200);
   esp.begin(115200);
-
-  while (!Serial); // wait for Leonardo enumeration, others continue immediately
-
-  // NOTE: 8MHz or slower host processors, like the Teensy @ 3.3v or Ardunio
-  // Pro Mini running at 3.3v, cannot handle this baud rate reliably due to
-  // the baud timing being too misaligned with processor ticks. You must use
-  // 38400 or slower in these cases, or use some kind of external separate
-  // crystal solution for the UART timer.
 
   // initialize device
   Serial.println(F("Initializing I2C devices..."));
@@ -115,13 +91,13 @@ void setup() {
   Serial.println(F("Initializing DMP..."));
   devStatus = mpu.dmpInitialize();
 
-  // supply your own gyro offsets here, scaled for min sensitivity
+  // offset the Gyroscope and accelerometer
   mpu.setXGyroOffset(220);
   mpu.setYGyroOffset(-50);
   mpu.setZGyroOffset(-85);
-  mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
+  mpu.setZAccelOffset(1788);
 
-  // make sure it worked (returns 0 if so)
+  // make sure MPU is initialized
   if (devStatus == 0) {
     // turn on the DMP, now that it's ready
     Serial.println(F("Enabling DMP..."));
@@ -148,7 +124,7 @@ void setup() {
   }
 
   // configure LED for output
-  pinMode(LED_PIN, OUTPUT);
+  //pinMode(LED_PIN, OUTPUT);
 
   //Configure Motor Shield
   //Setup Channel A
@@ -169,13 +145,16 @@ void loop() {
   // if programming failed, don't try to do anything
   if (!dmpReady) return;
 
-  // wait for MPU interrupt or extra packet(s) available
+  // wait for MPU interrupt handler
   while (!mpuInterrupt && fifoCount < packetSize) {
     if (loopCount == 20) {
       loopCount = 0;
     }
 
-    // Check for incoming commands
+// ================================================================
+// ===          CHECK FOR AND HANDLE INCOMING COMMANDS          ===
+// ================================================================
+
     if (esp.available()) {
       switch (int(esp.read())) {
         case 2:    //Foreward
@@ -210,21 +189,16 @@ void loop() {
     }
 
     // Use PID to find error component
-    Input = (ypr[1] * 180 / M_PI);
+    Input = (ypr[1] * 180 / M_PI);  //convert to degrees
     myPID.Compute();
-
-#if DEBUG
-    Serial.print("Input: ");
-    Serial.println(Input);
-#endif
 
     // translate error component to a motorspeed
     int motorSpeed = int(Output);
 
-#if DEBUG
-    Serial.print("Motor Speed: ");
-    Serial.println(motorSpeed);
-#endif
+// ================================================================
+// ===                 SEND COMMANDS TO MOTORS                  ===
+// ================================================================
+
     if (right && loopCount > 15) {
       if (motorSpeed < 0) {
         digitalWrite(9, HIGH);  //Engage the Brake for Channel A
@@ -328,47 +302,32 @@ void loop() {
     }
   }
 
-  // reset interrupt flag and get INT_STATUS byte
+// ================================================================
+// ===                GET DATA FROM MPU IF READY                ===
+// ================================================================
+
+  // reset interrupt flag and get MPU status
   mpuInterrupt = false;
   mpuIntStatus = mpu.getIntStatus();
 
-  // get current FIFO count
   fifoCount = mpu.getFIFOCount();
 
-  // check for overflow (this should never happen unless our code is too inefficient)
+  // check for overflow
   if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
-    // reset so we can continue cleanly
     mpu.resetFIFO();
     Serial.println(F("FIFO overflow!"));
 
-    // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    // check for DMP data ready interrupt (approx. every uSec)
   } else if (mpuIntStatus & 0x02) {
-    // wait for correct available data length, should be a VERY short wait
     while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
 
-    // read a packet from FIFO
     mpu.getFIFOBytes(fifoBuffer, packetSize);
 
     // track FIFO count here in case there is > 1 packet available
-    // (this lets us immediately read more without waiting for an interrupt)
     fifoCount -= packetSize;
 
-    // display Euler angles in degrees
     mpu.dmpGetQuaternion(&q, fifoBuffer);
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-
-#if DEBUG
-    Serial.print("ypr\t");
-    Serial.print(ypr[0] * 180 / M_PI);
-    Serial.print("\t");
-    Serial.print(ypr[1] * 180 / M_PI);
-    Serial.print("\t");
-    Serial.println(ypr[2] * 180 / M_PI);
-#endif
-
-    // blink LED to indicate activity
-    blinkState = !blinkState;
-    digitalWrite(LED_PIN, blinkState);
   }
 }

@@ -11,7 +11,9 @@ SoftwareSerial esp(4, 5);
 
 //PID initialization
 double Setpoint, Input, Output;
-PID myPID(&Input, &Output, &Setpoint, 15, 130, 1, DIRECT);
+//15,130,1
+// 30,30,1.5
+PID myPID(&Input, &Output, &Setpoint, 15, 120, 1.1, DIRECT);
 
 // class default I2C address is 0x68
 // specific I2C addresses may be passed as a parameter here
@@ -21,6 +23,9 @@ MPU6050 mpu;
 //MPU6050 mpu(0x69); // <-- use for AD0 high
 
 #define DEBUG false
+bool left = false;
+bool right = false;
+uint8_t loopCount = 0;
 #define LED_PIN 13
 #define MOTOR_SPEED 255
 bool blinkState = false;
@@ -48,8 +53,10 @@ uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r'
 // ================================================================
 
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+//volatile bool balance = false;
 void dmpDataReady() {
   mpuInterrupt = true;
+  loopCount++;
 }
 
 
@@ -60,13 +67,16 @@ void dmpDataReady() {
 
 void setup() {
   // PID initial varialbles declarations
-  Setpoint = 3.5;
+  Setpoint = 1.9; //2.8 backwards
+  // 1.9 balance
   Input = 0;  //Gyro not configured yet so set default input
 
   // turn the PID on
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(-1 * MOTOR_SPEED, MOTOR_SPEED);
-  myPID.SetSampleTime(10);
+  //10
+  // 5ms - 9v on the battery
+  myPID.SetSampleTime(5);   // 1mS
 
 
   // join I2C bus (I2Cdev library doesn't do this automatically)
@@ -155,36 +165,50 @@ void setup() {
 // ================================================================
 // ===                    MAIN PROGRAM LOOP                     ===
 // ================================================================
-
 void loop() {
   // if programming failed, don't try to do anything
   if (!dmpReady) return;
 
   // wait for MPU interrupt or extra packet(s) available
   while (!mpuInterrupt && fifoCount < packetSize) {
+    if (loopCount == 20) {
+      loopCount = 0;
+    }
+
     // Check for incoming commands
     if (esp.available()) {
-      switch(2/*int(esp.read())*/) {
+      switch (int(esp.read())) {
         case 2:    //Foreward
           Serial.println("Foreward");
-          Setpoint = 0.8;
+          Setpoint = .7;
+          myPID.SetTunings(40, 120, 2);
           break;
         case 3:    //Backward
           Serial.println("Backwards");
-          Setpoint = 4.3;
+          Setpoint = 2.3;
+          myPID.SetTunings(30, 120, 2);
           break;
         case 4:    //Left
-          Serial.println("Left");
+          // Serial.println("left");
+          left = true;
+          Setpoint = 3.5;
+          myPID.SetTunings(15, 150, 2);
           break;
         case 5:    //Right
-          Serial.println("Right");
+          right = true;
+          Setpoint = 0;
+          myPID.SetTunings(15, 150, 2.1);
           break;
         default:   //Unknown command or 0 causes stop
-        Serial.println("Stop");
-          Setpoint = 3.5;
+          Serial.println("Stop");
+          left = false;
+          right = false;
+          Setpoint = 1.9;
+          //Setpoint = 2.5;
+          myPID.SetTunings(15, 120, 1.1);
       }
     }
-    
+
     // Use PID to find error component
     Input = (ypr[1] * 180 / M_PI);
     myPID.Compute();
@@ -201,40 +225,107 @@ void loop() {
     Serial.print("Motor Speed: ");
     Serial.println(motorSpeed);
 #endif
+    if (right && loopCount > 15) {
+      if (motorSpeed < 0) {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
 
-    //Motors forward
-    if (motorSpeed < 0) {
-      digitalWrite(9, HIGH);  //Engage the Brake for Channel A
-      digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+        digitalWrite(12, LOW);  //Establishes backward direction of Channel A
+        digitalWrite(9, LOW);   //Disengage the Brake for Channel A
+        analogWrite(3, abs((-1 * motorSpeed) - 180)); //Spins the motor on Channel A
 
-      digitalWrite(12, LOW);  //Establishes backward direction of Channel A
-      digitalWrite(9, LOW);   //Disengage the Brake for Channel A
-      analogWrite(3, (-1 * motorSpeed));  //Spins the motor on Channel A
+        digitalWrite(13, LOW);  //Establishes backward direction of Channel B
+        digitalWrite(8, LOW);   //Disengage the Brake for Channel B
+        analogWrite(11, (-1 * motorSpeed));  //Spins the motor on Channel B
+      }
 
-      digitalWrite(13, LOW);  //Establishes backward direction of Channel B
-      digitalWrite(8, LOW);   //Disengage the Brake for Channel B
-      analogWrite(11, (-1 * motorSpeed));  //Spins the motor on Channel B
+      //Motors backward
+      else if (motorSpeed > 0) {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+
+        digitalWrite(12, HIGH); //Establishes forward direction of Channel A
+        digitalWrite(9, LOW);   //Disengage the Brake for Channel A
+        analogWrite(3, motorSpeed);   //Spins the motor on Channel A
+
+        digitalWrite(13, HIGH); //Establishes forward direction of Channel B
+        digitalWrite(8, LOW);   //Disengage the Brake for Channel B
+        analogWrite(11, abs(motorSpeed - 180)); //Spins the motor on Channel B
+      }
+
+      else {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+      }
     }
 
-    //Motors backward
-    else if (motorSpeed > 0) {
-      digitalWrite(9, HIGH);  //Engage the Brake for Channel A
-      digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+    else  if (left && loopCount > 15) {
+      if (motorSpeed < 0) {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
 
-      digitalWrite(12, HIGH); //Establishes forward direction of Channel A
-      digitalWrite(9, LOW);   //Disengage the Brake for Channel A
-      analogWrite(3, motorSpeed);   //Spins the motor on Channel A
+        digitalWrite(12, LOW);  //Establishes backward direction of Channel A
+        digitalWrite(9, LOW);   //Disengage the Brake for Channel A
+        analogWrite(3, (-1 * motorSpeed));  //Spins the motor on Channel A
 
-      digitalWrite(13, HIGH); //Establishes forward direction of Channel B
-      digitalWrite(8, LOW);   //Disengage the Brake for Channel B
-      analogWrite(11, motorSpeed);   //Spins the motor on Channel B
+        digitalWrite(13, LOW);  //Establishes backward direction of Channel B
+        digitalWrite(8, LOW);   //Disengage the Brake for Channel B
+        analogWrite(11, abs((-1 * motorSpeed) - 180)); //Spins the motor on Channel B
+      }
+
+      //Motors backward
+      else if (motorSpeed > 0) {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+
+        digitalWrite(12, HIGH); //Establishes forward direction of Channel A
+        digitalWrite(9, LOW);   //Disengage the Brake for Channel A
+        analogWrite(3, abs(motorSpeed - 180)); //Spins the motor on Channel A
+
+        digitalWrite(13, HIGH); //Establishes forward direction of Channel B
+        digitalWrite(8, LOW);   //Disengage the Brake for Channel B
+        analogWrite(11, motorSpeed);   //Spins the motor on Channel B
+      }
+
+      else {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+      }
     }
 
     else {
-      digitalWrite(9, HIGH);  //Engage the Brake for Channel A
-      digitalWrite(9, HIGH);  //Engage the Brake for Channel B
-    }
+      if (motorSpeed < 0) {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
 
+        digitalWrite(12, LOW);  //Establishes backward direction of Channel A
+        digitalWrite(9, LOW);   //Disengage the Brake for Channel A
+        analogWrite(3, (-1 * motorSpeed));  //Spins the motor on Channel A
+
+        digitalWrite(13, LOW);  //Establishes backward direction of Channel B
+        digitalWrite(8, LOW);   //Disengage the Brake for Channel B
+        analogWrite(11, (-1 * motorSpeed));  //Spins the motor on Channel B
+      }
+
+      //Motors backward
+      else if (motorSpeed > 0) {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+
+        digitalWrite(12, HIGH); //Establishes forward direction of Channel A
+        digitalWrite(9, LOW);   //Disengage the Brake for Channel A
+        analogWrite(3, motorSpeed);   //Spins the motor on Channel A
+
+        digitalWrite(13, HIGH); //Establishes forward direction of Channel B
+        digitalWrite(8, LOW);   //Disengage the Brake for Channel B
+        analogWrite(11, motorSpeed);   //Spins the motor on Channel B
+      }
+
+      else {
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel A
+        digitalWrite(9, HIGH);  //Engage the Brake for Channel B
+      }
+    }
   }
 
   // reset interrupt flag and get INT_STATUS byte
